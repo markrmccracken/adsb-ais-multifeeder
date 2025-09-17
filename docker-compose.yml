@@ -1,0 +1,316 @@
+services:
+  ultrafeeder:
+  # ultrafeeder combines a number of functions:
+  # - it retrieves and decodes 1090MHz Mode A/C/S data from the SDR(s) using Wiedehopf's branch of readsb
+  # - it implements a `tar1090` based map on port 80 (mapped to port 8080 on the host)
+  # - it includes graph1090 (system statistics website) on http://xxxxx/graphs1090
+  # - it sends ADSB data directly (without the need of additional containers) to the
+  #   "new" aggregators, and, if desired, also to AdsbExchange
+  # - it includes mlat-client to send MLAT data to these aggregators
+  # - it includes an MLAT Hub to consolidate MLAT results and make them available to the built-in map and other services
+    image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:telegraf
+    #tty: true
+    container_name: ultrafeeder
+    hostname: ultrafeeder
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    healthcheck:
+      interval: 20m
+    device_cgroup_rules:
+      - 'c 189:* rwm'
+    ports:
+      - 8080:80               # to expose the web interface
+      - 9273-9274:9273-9274
+    environment:
+      # --------------------------------------------------
+      # general parameters:
+      - LOGLEVEL=error
+      - TZ=${FEEDER_TZ}
+      # --------------------------------------------------
+      # SDR related parameters:
+      - READSB_DEVICE_TYPE=rtlsdr
+      - READSB_RTLSDR_DEVICE=${ADSB_SDR_SERIAL}
+      - READSB_RTLSDR_PPM=${ADSB_SDR_PPM}
+      # --------------------------------------------------
+      # readsb/decoder parameters:
+      - READSB_LAT=${FEEDER_LAT}
+      - READSB_LON=${FEEDER_LONG}
+      - READSB_ALT=${FEEDER_ALT_M}m
+      - READSB_GAIN=${ADSB_SDR_GAIN}
+      - READSB_MODEAC=true
+      - READSB_RX_LOCATION_ACCURACY=2
+      - READSB_STATS_RANGE=true
+      #
+      # --------------------------------------------------
+      # Sources and Aggregator connections:
+      # Note - remove the ones you are not using / feeding
+      #  Make sure that each line ends with a semicolon ";",  with the
+      #  exception of the last line which shouldn't have a ";"
+      - ULTRAFEEDER_CONFIG=
+          adsb,feed.adsb.fi,30004,beast_reduce_plus_out;
+          adsb,in.adsb.lol,30004,beast_reduce_plus_out;
+          adsb,feed.airplanes.live,30004,beast_reduce_plus_out;
+          adsb,feed.theairtraffic.com,30004,beast_reduce_plus_out;
+          adsb,data.avdelphi.com,24999,beast_reduce_plus_out;
+          adsb,skyfeed.hpradar.com,30004,beast_reduce_plus_out;
+          adsb,feed1.adsbexchange.com,30004,beast_reduce_plus_out;
+          mlat,feed.adsb.fi,31090,39000;
+          mlat,in.adsb.lol,31090,39001;
+          mlat,feed.airplanes.live,31090,39002;
+          mlat,feed.theairtraffic.com,31090,39004;
+          mlat,skyfeed.hpradar.com,31090,39006;
+          mlat,feed.adsbexchange.com,31090,39008;
+          mlathub,piaware,30105,beast_in;
+          mlathub,planewatch,30105,beast_in;
+          mlathub,rbfeeder,30105,beast_in;
+      # --------------------------------------------------
+      - UUID=${ULTRAFEEDER_UUID}
+      - MLAT_USER=${FEEDER_NAME}
+      - READSB_FORWARD_MLAT_SBS=true
+      #
+      # --------------------------------------------------
+      # TAR1090 (Map Web Page) parameters:
+      - UPDATE_TAR1090=true
+      - TAR1090_DEFAULTCENTERLAT=${FEEDER_LAT}
+      - TAR1090_DEFAULTCENTERLON=${FEEDER_LONG}
+      - TAR1090_MESSAGERATEINTITLE=true
+      - TAR1090_PAGETITLE=${FEEDER_NAME}
+      - TAR1090_PLANECOUNTINTITLE=true
+      - TAR1090_ENABLE_AC_DB=true
+      - TAR1090_FLIGHTAWARELINKS=true
+      - HEYWHATSTHAT_PANORAMA_ID=${FEEDER_HEYWHATSTHAT_ID}
+      - HEYWHATSTHAT_ALTS=${FEEDER_HEYWHATSTHAT_ALTS}
+      - TAR1090_SITESHOW=true
+      - TAR1090_RANGE_OUTLINE_COLORED_BY_ALTITUDE=true
+      - TAR1090_RANGE_OUTLINE_WIDTH=2.0
+      - TAR1090_RANGERINGSDISTANCES=50,100,150,200
+      - TAR1090_RANGERINGSCOLORS='#1A237E','#0D47A1','#42A5F5','#64B5F6'
+      - TAR1090_USEROUTEAPI=true
+      - PROMETHEUS_ENABLE=true
+      #
+      # --------------------------------------------------
+      # GRAPHS1090 (Decoder and System Status Web Page) parameters:
+      - GRAPHS1090_DARKMODE=true
+      #
+      # --------------------------------------------------
+    volumes:
+      - /opt/adsb/ultrafeeder/globe_history:/var/globe_history
+      - /opt/adsb/ultrafeeder/graphs1090:/var/lib/collectd
+      - /proc/diskstats:/proc/diskstats:ro
+      - /dev:/dev:ro
+    tmpfs:
+      - /run:exec,size=256M
+      - /tmp:size=128M
+      - /var/log:size=32M
+#######################################
+  planewatch:
+    image: ghcr.io/plane-watch/docker-plane-watch:latest
+    tty: true
+    container_name: planewatch
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    environment:
+      - BEASTHOST=ultrafeeder
+      - LAT=${FEEDER_LAT}
+      - LONG=${FEEDER_LONG}
+      - ALT=${FEEDER_ALT_M}m
+      - TZ=${FEEDER_TZ}
+      - API_KEY=${PW_API_KEY}
+    tmpfs:
+      - /run:exec,size=64M
+      - /var/log
+###################################
+  piaware:
+    image: ghcr.io/sdr-enthusiasts/docker-piaware:latest
+    tty: true
+    container_name: piaware
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    ports:
+      - 8081:8080
+    environment:
+      - BEASTHOST=ultrafeeder
+      - LAT=${FEEDER_LAT}
+      - LONG=${FEEDER_LONG}
+      - TZ=${FEEDER_TZ}
+      - FEEDER_ID=${PIAWARE_FEEDER_ID}
+    tmpfs:
+      - /run:exec,size=64M
+      - /var/log
+###################################################
+  fr24:
+    image: ghcr.io/sdr-enthusiasts/docker-flightradar24:latest
+    tty: true
+    container_name: fr24
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    healthcheck:
+      interval: 40m
+    ports:
+      - 8754:8754
+    environment:
+      - BEASTHOST=ultrafeeder
+      - FR24KEY=${FR24_SHARING_KEY}
+    tmpfs:
+      - /var/log
+###########################################
+  rbfeeder:
+    image: ghcr.io/sdr-enthusiasts/docker-radarbox:latest
+    tty: true
+    container_name: rbfeeder
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    environment:
+      - BEASTHOST=ultrafeeder
+      - LAT=${FEEDER_LAT}
+      - LONG=${FEEDER_LONG}
+      - ALT=${FEEDER_ALT_M}
+      - TZ=${FEEDER_TZ}
+      - SHARING_KEY=${RADARBOX_SHARING_KEY}
+    tmpfs:
+      - /run:exec,size=64M
+      - /var/log
+####################################################
+  pfclient:
+    image: ghcr.io/sdr-enthusiasts/docker-planefinder:latest
+    tty: true
+    container_name: pfclient
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    ports:
+      - 30053:30053
+    environment:
+      - TZ=${FEEDER_TZ}
+      - BEASTHOST=ultrafeeder
+      - LAT=${FEEDER_LAT}
+      - LONG=${FEEDER_LONG}
+      - SHARECODE=${PLANEFINDER_SHARECODE}
+    tmpfs:
+      - /run:exec,size=64M
+      - /var/log/pfclient
+########################################################
+#ADSB
+
+########################################################
+  opensky:
+    image: ghcr.io/sdr-enthusiasts/docker-opensky-network:latest
+    tty: true
+    container_name: opensky
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    environment:
+      - TZ=${FEEDER_TZ}
+      - BEASTHOST=ultrafeeder
+      - LAT=${FEEDER_LAT}
+      - LONG=${FEEDER_LONG}
+      - ALT=${FEEDER_ALT_M}
+      - OPENSKY_USERNAME=${OPENSKY_USERNAME}
+      - OPENSKY_SERIAL=${OPENSKY_SERIAL}
+    tmpfs:
+      - /run:exec,size=64M
+      - /var/log
+######################################################
+#RadarVirtuel
+###################################################
+  watchtower:
+    image: containrrr/watchtower:latest
+    tty: true
+    container_name: watchtower
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    environment:
+      - TZ=${FEEDER_TZ}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400
+      - WATCHTOWER_ROLLING_RESTART=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+#####################################################
+  autoheal:
+    image: willfarrell/autoheal:latest
+    tty: true
+    container_name: autoheal
+    restart: unless-stopped
+    labels:
+      - "autoheal=true"
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    tmpfs:
+      - /run:exec,size=64M
+      - /var/log
+############################################
+  shipfeeder:
+    image: ghcr.io/sdr-enthusiasts/docker-shipfeeder
+    container_name: shipfeeder
+    hostname: shipfeeder
+    restart: unless-stopped
+    environment:
+#     general parameters:
+      - VERBOSE_LOGGING=
+#     ais-catcher general and website related parameters
+#      - AISCATCHER_EXTRA_OPTIONS=${SX_EXTRA_OPTIONS}
+      - STATION_NAME=${STATION_NAME}${SHIPXPLORER_SERIAL_NUMBER}
+      - STATION_HISTORY=3600
+      - BACKUP_INTERVAL=5
+      - FEEDER_LONG=${FEEDER_LONG}
+      - FEEDER_LAT=${FEEDER_LAT}
+      - SITESHOW=on
+      - PROMETHEUS_ENABLE=on
+      - REALTIME=on
+#     ais-catcher receiver related parameters
+      - RTLSDR_DEVICE_SERIAL=${RTLSDR_DEVICE_SERIAL}
+      - RTLSDR_DEVICE_GAIN=${RTLSDR_DEVICE_GAIN}
+      - RTLSDR_DEVICE_PPM=${RTLSDR_DEVICE_PPM}
+#      - RTLSDR_DEVICE_BANDWIDTH=${RTLSDR_DEVICE_BANDWIDTH}
+      - AISCATCHER_DECODER_AFC_WIDE=${AISCATCHER_DECODER_AFC_WIDE}
+#     aggregrators related parameters
+      - AIRFRAMES_STATION_ID=${AIRFRAMES_STATION_ID}
+      - AISCATCHER_FEEDER_KEY=${AISCATCHER_FEEDER_KEY}
+#      - AISHUB_UDP_PORT=${AISHUB_UDP_PORT}
+#      - APRSFI_FEEDER_KEY=${APRSFI_FEEDER_KEY}
+#      - BOATBEACON_SHAREDATA=${BOATBEACON_SHAREDATA}
+#      - HPRADAR_UDP_PORT=${HPRADAR_UDP_PORT}
+      - MARINETRAFFIC_UDP_PORT=${MARINETRAFFIC_UDP_PORT}
+#      - MYSHIPTRACKING_UDP_PORT=${MYSHIPTRACKING_UDP_PORT}
+#      - RADARVIRTUEL_FEEDER_KEY=${RADARVIRTUEL_FEEDER_KEY}
+#      - RADARVIRTUEL_STATION_ID=${RADARVIRTUEL_STATION_ID}
+#      - SHIPFINDER_SHAREDATA=${SHIPFINDER_SHAREDATA}
+#      - SHIPPINGEXPLORER_UDP_PORT=${SHIPPINGEXPLORER_UDP_PORT}
+      - SHIPXPLORER_SHARING_KEY=${SHIPXPLORER_SHARING_KEY}
+      - SHIPXPLORER_SERIAL_NUMBER=${SHIPXPLORER_SERIAL_NUMBER}
+      - VESSELFINDER_UDP_PORT=${VESSELFINDER_UDP_PORT}
+#      - VESSELTRACKER_UDP_PORT=${VESSELTRACKER_UDP_PORT}
+#      - UDP_FEEDS=${SX_UDP_FEEDS}
+#     incoming UDP data related parameters:
+#      - AISCATCHER_UDP_INPUTS=${AISCATCHER_UDP_INPUTS}
+    ports:
+      - 90:80
+      - 9988:9988/udp
+    device_cgroup_rules:
+      - 'c 189:* rwm'
+    tmpfs:
+      - /tmp
+    volumes:
+      - "/etc/localtime:/etc/localtime:ro"
+      - "/etc/timezone:/etc/timezone:ro"
+      - "/opt/ais/shipxplorer/data:/data"
+      - /dev:/dev:rw
+############################################################
+  dozzle:
+    container_name: dozzle
+    restart: unless-stopped
+    image: amir20/dozzle:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - 9999:8080
