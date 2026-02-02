@@ -221,8 +221,7 @@ services:
 #RadarVirtuel
 ###################################################
   watchtower:
-    image: containrrr/watchtower:latest
-    tty: true
+    image: nickfedor/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     labels:
